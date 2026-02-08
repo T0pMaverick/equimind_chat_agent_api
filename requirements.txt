@@ -1,0 +1,45 @@
+# FastAPI and Server
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Database
+psycopg2-binary
+sqlalchemy
+alembic
+
+# Vector Database
+chromadb
+
+# Embeddings & ML
+sentence-transformers
+torch
+# OpenAI
+openai
+
+# Rate Limiting
+slowapi
+
+# Utilities
+python-dotenv
+pydantic
+pydantic-settings
+
+# HTTP Client
+httpx
+aiohttp
+
+# JSON & Data Processing
+ujson
+
+# CORS & Security
+python-jose[cryptography]
+
+# Logging
+loguru
+
+# Date/Time
+python-dateutil
+
+# Monitoring (optional but recommended for production)
+prometheus-fastapi-instrumentator
