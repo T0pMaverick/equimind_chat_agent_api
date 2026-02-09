@@ -15,6 +15,44 @@ class AlertService:
         """Initialize HTTP client"""
         self.base_url = settings.alert_api_base_url
         self.timeout = httpx.Timeout(30.0, connect=10.0)
+        self.user_id = "5"  # Default user_id
+    
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers with user_id"""
+        return {
+            "Content-Type": "application/json",
+            "user_id": self.user_id
+        }
+    
+    async def get_predefined_metrics(self) -> List[Dict[str, Any]]:
+        """
+        Get list of predefined metrics available for alerts
+        
+        Returns:
+            List of predefined metrics
+        """
+        url = f"{self.base_url}/alerts/predefined-metrics"
+        
+        logger.info("Fetching predefined metrics")
+        
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, headers=self._get_headers())
+                response.raise_for_status()
+                
+                metrics = response.json()
+                logger.info(f"Retrieved {len(metrics)} predefined metrics")
+                return metrics
+        
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error fetching metrics: {e.response.status_code}")
+            raise Exception(f"Failed to fetch metrics: {e.response.text}")
+        except httpx.RequestError as e:
+            logger.error(f"Request error fetching metrics: {str(e)}")
+            raise Exception(f"Failed to connect to alert service: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error fetching metrics: {str(e)}")
+            raise
     
     async def create_alert(self, alert_data: AlertCreate) -> Dict[str, Any]:
         """
@@ -34,7 +72,11 @@ class AlertService:
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=payload)
+                response = await client.post(
+                    url, 
+                    json=payload, 
+                    headers=self._get_headers()
+                )
                 response.raise_for_status()
                 
                 result = response.json()
@@ -51,43 +93,13 @@ class AlertService:
             logger.error(f"Unexpected error creating alert: {str(e)}")
             raise
     
-    async def get_predefined_metrics(self) -> List[PredefinedMetric]:
-        """
-        Get list of predefined metrics available for alerts
-        
-        Returns:
-            List of predefined metrics
-        """
-        url = f"{self.base_url}/alerts/predefined-metrics"
-        
-        logger.info("Fetching predefined metrics")
-        
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                
-                metrics = response.json()
-                logger.info(f"Retrieved {len(metrics)} predefined metrics")
-                return [PredefinedMetric(**m) for m in metrics]
-        
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error fetching metrics: {e.response.status_code}")
-            raise Exception(f"Failed to fetch metrics: {e.response.text}")
-        except httpx.RequestError as e:
-            logger.error(f"Request error fetching metrics: {str(e)}")
-            raise Exception(f"Failed to connect to alert service: {str(e)}")
-        except Exception as e:
-            logger.error(f"Unexpected error fetching metrics: {str(e)}")
-            raise
-    
     async def get_alert(self, alert_id: int) -> Dict[str, Any]:
         """Get alert by ID"""
         url = f"{self.base_url}/alerts/{alert_id}"
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url)
+                response = await client.get(url, headers=self._get_headers())
                 response.raise_for_status()
                 return response.json()
         except Exception as e:
@@ -100,7 +112,11 @@ class AlertService:
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.put(url, json=update_data)
+                response = await client.put(
+                    url, 
+                    json=update_data, 
+                    headers=self._get_headers()
+                )
                 response.raise_for_status()
                 return response.json()
         except Exception as e:
@@ -113,7 +129,7 @@ class AlertService:
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.delete(url)
+                response = await client.delete(url, headers=self._get_headers())
                 response.raise_for_status()
                 return True
         except Exception as e:

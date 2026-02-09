@@ -7,7 +7,7 @@ from app.config import settings
 from app.schemas import MessageRole, ReasoningMode
 from loguru import logger
 import json
-
+from app.utils.symbol_converter import symbol_converter
 
 class LLMService:
     """Service for LLM operations using OpenAI"""
@@ -138,6 +138,102 @@ Please analyze using the context provided and your expertise."""
         
         return messages
     
+    async def extract_alert_info_conversational(
+        self, 
+        user_message: str, 
+        chat_history: List[Dict[str, str]],
+        predefined_metrics: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Extract alert information from conversation with follow-up questions
+        
+        Args:
+            user_message: Latest user message
+            chat_history: Full conversation history
+            predefined_metrics: Available metrics for alerts
+            
+        Returns:
+            Dict with alert info or follow-up question
+        """
+        # Format available metrics
+        metrics_text = "Available metrics for alerts:\n"
+        for metric in predefined_metrics:
+            metrics_text += f"- {metric['metric']}: {metric['description']} (type: {metric['data_type']})\n"
+        
+        extraction_prompt = f"""You are an alert creation assistant. Analyze the conversation and determine if you have enough information to create an alert.
+
+{metrics_text}
+
+Conversation history:
+{chr(10).join([f"{msg['role']}: {msg['content']}" for msg in chat_history[-5:]])}
+
+Latest message: {user_message}
+
+Required information to create an alert:
+1. Symbol(s) - Which stock ticker(s)? (e.g., "JKH.N0000", "COMB.N0000")
+2. Metric - Which metric to monitor? (must be from available metrics above)
+3. Operation - What comparison? (>, <, >=, <=, =, BETWEEN, IN)
+4. Value(s) - What threshold value(s)?
+5. Alert name - What to name this alert?
+
+Respond ONLY with valid JSON in one of these formats:
+
+If you have ALL information needed:
+{{
+    "ready": true,
+    "alert": {{
+        "name": "Alert name",
+        "description": "Brief description",
+        "symbols": ["SYMBOL.N0000"],
+        "conditions": [
+            {{
+                "operator": "AND",
+                "conditions": [
+                    {{
+                        "metric": "price",
+                        "operation": ">",
+                        "values": [150.0],
+                        "negation": false
+                    }}
+                ]
+            }}
+        ]
+    }}
+}}
+
+If you need MORE information:
+{{
+    "ready": false,
+    "missing": ["symbol", "threshold"],
+    "question": "Which stock would you like to create an alert for, and what price threshold?"
+}}
+
+Analyze the conversation and respond:"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[
+                    {"role": "system", "content": "You are a JSON extraction assistant for alert creation. Always ask clear, specific follow-up questions."},
+                    {"role": "user", "content": extraction_prompt}
+                ],
+                temperature=0.3,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            logger.info(f"Alert extraction result: ready={result.get('ready')}")
+            
+            return result
+        
+        except Exception as e:
+            logger.error(f"Error extracting alert info: {str(e)}")
+            return {
+                "ready": False,
+                "question": "I need more information. Which stock and what condition would you like to monitor?"
+            }
+    
+    
     async def generate_response(
         self,
         user_message: str,
@@ -164,6 +260,9 @@ Please analyze using the context provided and your expertise."""
             )
             
             content = response.choices[0].message.content
+            
+            content = symbol_converter.convert_symbols_in_text(content)
+            
             usage = {
                 'prompt_tokens': response.usage.prompt_tokens,
                 'completion_tokens': response.usage.completion_tokens,

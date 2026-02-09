@@ -181,31 +181,59 @@ async def chat(
         
         # Step 8: Handle alert creation if requested
         alert_created = None
+        follow_up_question = None
+        
         if chat_request.create_alert:
             try:
                 feed.add_activity(
-                    feed.creating_alert("Price Alert").get("type"),
-                    feed.creating_alert("Price Alert").get("message")
+                    feed.creating_alert("Stock Alert").get("type"),
+                    feed.creating_alert("Stock Alert").get("message")
                 )
                 
-                # Extract alert info from conversation
-                alert_info = await llm_service.extract_alert_info(
-                    chat_request.message,
-                    llm_response['content']
+                # STEP 1: Fetch predefined metrics
+                logger.info("Fetching predefined metrics for alert creation")
+                predefined_metrics = await alert_service.get_predefined_metrics()
+                
+                # STEP 2: Extract alert info with conversational approach
+                alert_extraction = await llm_service.extract_alert_info_conversational(
+                    user_message=chat_request.message,
+                    chat_history=chat_history,
+                    predefined_metrics=predefined_metrics
                 )
                 
-                if alert_info:
-                    # Create alert
-                    alert_data = AlertCreate(**{
-                        k: v for k, v in alert_info.items() if k != 'should_create'
-                    })
+                if alert_extraction.get("ready"):
+                    # We have all info - create the alert
+                    alert_data = AlertCreate(
+                        name=alert_extraction["alert"]["name"],
+                        description=alert_extraction["alert"]["description"],
+                        status="active",
+                        symbols=alert_extraction["alert"]["symbols"],
+                        conditions=alert_extraction["alert"]["conditions"]
+                    )
                     
                     alert_response = await alert_service.create_alert(alert_data)
                     alert_created = alert_response
                     
                     feed.add_activity(
-                        feed.alert_created_successfully(alert_response['id']).get("type"),
-                        feed.alert_created_successfully(alert_response['id']).get("message")
+                        feed.alert_created_successfully(alert_response.get('id', 'N/A')).get("type"),
+                        feed.alert_created_successfully(alert_response.get('id', 'N/A')).get("message")
+                    )
+                    
+                    # Modify assistant message to confirm alert creation
+                    confirmation = f"\n\n✅ **Alert Created Successfully!**\n- Name: {alert_data.name}\n- Symbol(s): {', '.join(alert_data.symbols)}\n- Condition: {alert_data.conditions[0]['conditions'][0]['metric']} {alert_data.conditions[0]['conditions'][0]['operation']} {alert_data.conditions[0]['conditions'][0]['values'][0]}"
+                    assistant_message.content += confirmation
+                    
+                else:
+                    # Need more info - ask follow-up question
+                    follow_up_question = alert_extraction.get("question")
+                    logger.info(f"Need more info for alert: {follow_up_question}")
+                    
+                    # Modify assistant message to include follow-up question
+                    assistant_message.content = follow_up_question
+                    
+                    feed.add_activity(
+                        "alert_creation",
+                        "Requesting additional information for alert"
                     )
                 
             except Exception as e:
@@ -214,6 +242,10 @@ async def chat(
                     feed.alert_creation_failed(str(e)).get("type"),
                     feed.alert_creation_failed(str(e)).get("message")
                 )
+                
+                # Add error message to response
+                error_msg = f"\n\n⚠️ **Alert Creation Failed**: {str(e)}"
+                assistant_message.content += error_msg
         
         # Step 9: Save activity feed to database
         await feed.save_to_db(db, session_id, assistant_message.id)
@@ -411,28 +443,39 @@ async def chat_stream(
             alert_created = None
             if chat_request.create_alert:
                 try:
-                    yield send_activity("alert_creation", "Creating alert: Price Alert")
+                    yield send_activity("alert_creation", "Fetching available alert metrics")
                     await asyncio.sleep(0.1)
                     
-                    alert_info = await llm_service.extract_alert_info(
-                        chat_request.message,
-                        llm_response['content']
+                    # Fetch predefined metrics
+                    predefined_metrics = await alert_service.get_predefined_metrics()
+                    
+                    yield send_activity("alert_creation", "Analyzing alert requirements")
+                    await asyncio.sleep(0.1)
+                    
+                    # Extract alert info conversationally
+                    alert_extraction = await llm_service.extract_alert_info_conversational(
+                        user_message=chat_request.message,
+                        chat_history=chat_history,
+                        predefined_metrics=predefined_metrics
                     )
                     
-                    if alert_info:
-                        alert_data = AlertCreate(**{
-                            k: v for k, v in alert_info.items() if k != 'should_create'
-                        })
+                    if alert_extraction.get("ready"):
+                        yield send_activity("alert_creation", "Creating alert")
+                        await asyncio.sleep(0.1)
                         
+                        alert_data = AlertCreate(**alert_extraction["alert"])
                         alert_response = await alert_service.create_alert(alert_data)
                         alert_created = alert_response
                         
-                        yield send_activity("alert_creation", f"Alert created successfully (ID: {alert_response['id']})")
-                        await asyncio.sleep(0.1)
+                        yield send_activity("alert_creation", f"Alert created successfully (ID: {alert_response.get('id', 'N/A')})")
+                    else:
+                        # Need more info
+                        yield send_activity("alert_creation", "Additional information needed for alert")
                 
                 except Exception as e:
                     logger.error(f"Error creating alert: {str(e)}")
                     yield send_activity("error", f"Failed to create alert: {str(e)}")
+                    
             
             # Step 8: Send final response
             final_response = {
