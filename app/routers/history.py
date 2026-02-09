@@ -133,7 +133,7 @@ async def get_session(
             content=msg.content,
             timestamp=msg.timestamp,
             tokens_used=msg.tokens_used,
-            metadata=msg.metadata
+            metadata=msg.message_metadata
         )
         for msg in messages
     ]
@@ -144,7 +144,7 @@ async def get_session(
         created_at=session.created_at,
         updated_at=session.updated_at,
         is_active=session.is_active,
-        metadata=session.metadata,
+        metadata=session.session_metadata,
         message_count=message_count,
         messages=message_responses
     )
@@ -180,7 +180,7 @@ async def create_session(
         created_at=session.created_at,
         updated_at=session.updated_at,
         is_active=session.is_active,
-        metadata=session.metadata,
+        metadata=session.session_metadata,
         message_count=0
     )
 
@@ -227,7 +227,7 @@ async def update_session(
         created_at=session.created_at,
         updated_at=session.updated_at,
         is_active=session.is_active,
-        metadata=session.metadata,
+        metadata=session.session_metadata,
         message_count=message_count
     )
 

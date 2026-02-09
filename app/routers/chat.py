@@ -260,7 +260,7 @@ async def chat(
                 content=assistant_message.content,
                 timestamp=assistant_message.timestamp,
                 tokens_used=assistant_message.tokens_used,
-                metadata=assistant_message.metadata
+                metadata=assistant_message.message_metadata
             ),
             activity_feed=feed.get_activities(),
             alert_created=alert_created
@@ -304,7 +304,7 @@ async def get_session_messages(
                 content=msg.content,
                 timestamp=msg.timestamp,
                 tokens_used=msg.tokens_used,
-                metadata=msg.metadata
+                metadata=msg.message_metadata
             )
             for msg in messages
         ]

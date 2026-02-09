@@ -47,7 +47,8 @@ class Settings(BaseSettings):
     # CORS
     allowed_origins: str = Field(
         default="http://localhost:3000",
-        env="ALLOWED_ORIGINS"
+        env="ALLOWED_ORIGINS",
+        
     )
     
     # Chat Configuration
