@@ -36,245 +36,6 @@ from loguru import logger
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat"])
 
 
-@router.post("/", response_model=ChatResponse)
-@limiter.limit("20/minute")
-async def chat(
-    request: Request,
-    chat_request: ChatRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Main chat endpoint with RAG, activity feed, and alert creation
-    
-    - Searches internal knowledge base (and optionally web)
-    - Generates AI response using OpenAI
-    - Creates alerts if requested
-    - Returns activity feed showing agent's steps
-    """
-    # Create activity feed
-    feed = create_activity_feed()
-    
-    try:
-        # Step 1: Get or create session
-        feed.add_activity(
-            feed.processing_query().get("type"),
-            feed.processing_query().get("message")
-        )
-        
-        session_id = chat_request.session_id
-        if session_id:
-            # Load existing session
-            session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
-            if not session:
-                raise HTTPException(status_code=404, detail="Chat session not found")
-        else:
-            # Create new session
-            session = ChatSession(
-                title=chat_request.message[:100],  # Use first 100 chars as title
-                session_metadata={"context_mode": chat_request.context_mode.value}
-            )
-            db.add(session)
-            db.commit()
-            db.refresh(session)
-            session_id = session.id
-        
-        # Step 2: Search knowledge base (if internal context enabled)
-        context = None
-        if chat_request.context_mode in [ContextMode.WEB_AND_INTERNAL, ContextMode.INTERNAL_ONLY]:
-            feed.add_activity(
-                feed.searching_knowledge_base(chat_request.message).get("type"),
-                feed.searching_knowledge_base(chat_request.message).get("message")
-            )
-            
-            search_results = vector_store.search(
-                query=chat_request.message,
-                top_k=5
-            )
-            
-            if search_results:
-                feed.add_activity(
-                    feed.found_documents(len(search_results)).get("type"),
-                    feed.found_documents(len(search_results)).get("message")
-                )
-                
-                # Build context from search results
-                context = "\n\n".join([
-                    f"**Document {i+1}** (Relevance: {r['score']:.2f}):\n{r['content']}"
-                    for i, r in enumerate(search_results)
-                ])
-            else:
-                feed.add_activity(
-                    feed.no_documents_found().get("type"),
-                    feed.no_documents_found().get("message")
-                )
-        
-        # Step 3: Get chat history
-        history_messages = db.query(Message).filter(
-            Message.session_id == session_id
-        ).order_by(Message.timestamp.asc()).all()
-        
-        chat_history = [
-            {"role": msg.role, "content": msg.content}
-            for msg in history_messages[-10:]  # Last 10 messages
-        ]
-        
-        # Step 4: Determine analysis activities based on reasoning mode
-        if chat_request.reasoning_mode == ReasoningMode.DEEP:
-            feed.add_activity(
-                feed.analyzing_financial_metrics().get("type"),
-                feed.analyzing_financial_metrics().get("message")
-            )
-            feed.add_activity(
-                feed.building_investment_thesis().get("type"),
-                feed.building_investment_thesis().get("message")
-            )
-            feed.add_activity(
-                feed.evaluating_catalysts().get("type"),
-                feed.evaluating_catalysts().get("message")
-            )
-            feed.add_activity(
-                feed.performing_valuation().get("type"),
-                feed.performing_valuation().get("message")
-            )
-            feed.add_activity(
-                feed.generating_report().get("type"),
-                feed.generating_report().get("message")
-            )
-        else:
-            feed.add_activity(
-                feed.preparing_analysis().get("type"),
-                feed.preparing_analysis().get("message")
-            )
-            feed.add_activity(
-                feed.generating_response().get("type"),
-                feed.generating_response().get("message")
-            )
-        
-        # Step 5: Generate LLM response
-        llm_response = await llm_service.generate_response(
-            user_message=chat_request.message,
-            context=context,
-            chat_history=chat_history,
-            reasoning_mode=chat_request.reasoning_mode
-        )
-        
-        # Step 6: Save user message
-        user_message = Message(
-            session_id=session_id,
-            role=MessageRole.USER.value,
-            content=chat_request.message,
-            message_metadata={"context_mode": chat_request.context_mode.value}
-        )
-        db.add(user_message)
-        
-        # Step 7: Save assistant message
-        assistant_message = Message(
-            session_id=session_id,
-            role=MessageRole.ASSISTANT.value,
-            content=llm_response['content'],
-            tokens_used=llm_response['usage']['total_tokens'],
-            message_metadata=llm_response['usage']
-        )
-        db.add(assistant_message)
-        db.commit()
-        db.refresh(assistant_message)
-        
-        # Step 8: Handle alert creation if requested
-        alert_created = None
-        follow_up_question = None
-        
-        if chat_request.create_alert:
-            try:
-                feed.add_activity(
-                    feed.creating_alert("Stock Alert").get("type"),
-                    feed.creating_alert("Stock Alert").get("message")
-                )
-                
-                # STEP 1: Fetch predefined metrics
-                logger.info("Fetching predefined metrics for alert creation")
-                predefined_metrics = await alert_service.get_predefined_metrics()
-                
-                # STEP 2: Extract alert info with conversational approach
-                alert_extraction = await llm_service.extract_alert_info_conversational(
-                    user_message=chat_request.message,
-                    chat_history=chat_history,
-                    predefined_metrics=predefined_metrics
-                )
-                
-                if alert_extraction.get("ready"):
-                    # We have all info - create the alert
-                    alert_data = AlertCreate(
-                        name=alert_extraction["alert"]["name"],
-                        description=alert_extraction["alert"]["description"],
-                        status="active",
-                        symbols=alert_extraction["alert"]["symbols"],
-                        conditions=alert_extraction["alert"]["conditions"]
-                    )
-                    
-                    alert_response = await alert_service.create_alert(alert_data)
-                    alert_created = alert_response
-                    
-                    feed.add_activity(
-                        feed.alert_created_successfully(alert_response.get('id', 'N/A')).get("type"),
-                        feed.alert_created_successfully(alert_response.get('id', 'N/A')).get("message")
-                    )
-                    
-                    # Modify assistant message to confirm alert creation
-                    confirmation = f"\n\n✅ **Alert Created Successfully!**\n- Name: {alert_data.name}\n- Symbol(s): {', '.join(alert_data.symbols)}\n- Condition: {alert_data.conditions[0]['conditions'][0]['metric']} {alert_data.conditions[0]['conditions'][0]['operation']} {alert_data.conditions[0]['conditions'][0]['values'][0]}"
-                    assistant_message.content += confirmation
-                    
-                else:
-                    # Need more info - ask follow-up question
-                    follow_up_question = alert_extraction.get("question")
-                    logger.info(f"Need more info for alert: {follow_up_question}")
-                    
-                    # Modify assistant message to include follow-up question
-                    assistant_message.content = follow_up_question
-                    
-                    feed.add_activity(
-                        "alert_creation",
-                        "Requesting additional information for alert"
-                    )
-                
-            except Exception as e:
-                logger.error(f"Error creating alert: {str(e)}")
-                feed.add_activity(
-                    feed.alert_creation_failed(str(e)).get("type"),
-                    feed.alert_creation_failed(str(e)).get("message")
-                )
-                
-                # Add error message to response
-                error_msg = f"\n\n⚠️ **Alert Creation Failed**: {str(e)}"
-                assistant_message.content += error_msg
-        
-        # Step 9: Save activity feed to database
-        await feed.save_to_db(db, session_id, assistant_message.id)
-        
-        # Step 10: Return response
-        return ChatResponse(
-            session_id=session_id,
-            message=MessageResponse(
-                id=assistant_message.id,
-                session_id=session_id,
-                role=MessageRole.ASSISTANT,
-                content=assistant_message.content,
-                timestamp=assistant_message.timestamp,
-                tokens_used=assistant_message.tokens_used,
-                metadata=assistant_message.message_metadata
-            ),
-            activity_feed=feed.get_activities(),
-            alert_created=alert_created
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}")
-        feed.add_activity(
-            feed.error_occurred(str(e)).get("type"),
-            feed.error_occurred(str(e)).get("message")
-        )
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/sessions/{session_id}/messages")
@@ -371,10 +132,21 @@ async def chat_stream(
                 for msg in history_messages[-10:]
             ]
 
-            # ── Step 2: Query SQL databases ───────────────────────────────────
+            # ── Step 2: Query SQL databases (skip if creating alert) ──────────
             final_content = None
-
-            if chat_request.context_mode in [ContextMode.WEB_AND_INTERNAL, ContextMode.INTERNAL_ONLY]:
+            
+            # Check if this is an alert-only request
+            is_alert_request = chat_request.create_alert and any(
+                keyword in chat_request.message.lower() 
+                for keyword in ["alert", "notify", "notification", "tell me when", "let me know when"]
+            )
+            
+            if is_alert_request:
+                logger.info("Alert-only request detected - skipping SQL query")
+                yield send_activity("alert_creation", "Processing alert request")
+                await asyncio.sleep(0.1)
+                
+            elif chat_request.context_mode in [ContextMode.WEB_AND_INTERNAL, ContextMode.INTERNAL_ONLY]:
                 yield send_activity("search", "Connecting to financial databases")
                 await asyncio.sleep(0.1)
 
@@ -398,20 +170,21 @@ async def chat_stream(
                     # SQL agent already produced the final answer
                     final_content = sql_result.get("content", "")
 
-                    if final_content:
+                    if final_content and "unable to query" not in final_content.lower():
                         yield send_activity("analysis", "Query returned results — formatting response")
                     else:
-                        yield send_activity("analysis", "No results found — generating fallback response")
+                        yield send_activity("analysis", "No results found — will provide general response")
+                        final_content = None  # Clear error content
 
                     await asyncio.sleep(0.1)
 
                 except Exception as e:
                     logger.error(f"SQL agent error: {str(e)}")
                     yield send_activity("error", f"Database query failed: {str(e)}")
-                    final_content = None  # Fall through to LLM fallback below
+                    final_content = None
 
-            # ── Step 3: LLM fallback (if SQL agent returned nothing or mode is web-only) ──
-            if not final_content:
+            # ── Step 3: LLM fallback (if SQL agent returned nothing) ──────────
+            if not final_content and not is_alert_request:
                 if chat_request.reasoning_mode == ReasoningMode.DEEP:
                     yield send_activity("analysis", "Analyzing financial metrics and market data")
                     await asyncio.sleep(0.1)
@@ -438,37 +211,23 @@ async def chat_stream(
                 final_content = llm_response["content"]
                 tokens_used = llm_response["usage"]["total_tokens"]
                 usage_metadata = llm_response["usage"]
-            else:
+                
+            elif final_content:
                 # SQL agent handled it — apply symbol conversion
                 from app.utils.symbol_converter import symbol_converter
                 final_content = symbol_converter.convert_symbols_in_text(final_content)
                 tokens_used = 0
                 usage_metadata = {"source": "sql_agent"}
+            else:
+                # Alert-only request, content will be set after alert creation
+                tokens_used = 0
+                usage_metadata = {"source": "alert_only"}
 
-            yield send_activity("generation", "Finalizing response")
-            await asyncio.sleep(0.1)
+            if not is_alert_request:
+                yield send_activity("generation", "Finalizing response")
+                await asyncio.sleep(0.1)
 
-            # ── Step 4: Save messages ─────────────────────────────────────────
-            user_message_obj = Message(
-                session_id=session_id,
-                role=MessageRole.USER.value,
-                content=chat_request.message,
-                message_metadata={"context_mode": chat_request.context_mode.value}
-            )
-            db.add(user_message_obj)
-
-            assistant_message = Message(
-                session_id=session_id,
-                role=MessageRole.ASSISTANT.value,
-                content=final_content,
-                tokens_used=tokens_used,
-                message_metadata=usage_metadata
-            )
-            db.add(assistant_message)
-            db.commit()
-            db.refresh(assistant_message)
-
-            # ── Step 5: Handle alert creation ─────────────────────────────────
+            # ── Step 4: Handle alert creation ─────────────────────────────────
             alert_created = None
             if chat_request.create_alert:
                 try:
@@ -498,17 +257,61 @@ async def chat_stream(
                             "alert_creation",
                             f"Alert created successfully (ID: {alert_response.get('id', 'N/A')})"
                         )
+                        
+                        # ✅ Generate success message
+                        alert_dict = alert_data.model_dump()
+                        symbols = ", ".join(alert_dict["symbols"])
+                        condition = alert_dict["conditions"][0]["conditions"][0]  # ✅ Use alert_dict!
+                        metric = condition.get("metric", "value")
+                        operation = condition.get("operation", "")
+                        value = condition.get("values", [0])[0]
+                        
+                        alert_success_message = f"""✅ **Alert Created Successfully!**
+
+**Alert Details:**
+- **Name:** {alert_data.name}
+- **Symbols:** {symbols}
+- **Condition:** {metric} {operation} {value}
+- **Status:** Active
+- **Alert ID:** {alert_response.get('id', 'N/A')}
+
+Your alert is now active and you'll be notified when the condition is met."""
+
+                        # Override content with alert success message
+                        final_content = alert_success_message
+                        
                     else:
+                        # Need more info - ask follow-up question
                         follow_up = alert_extraction.get("question", "Please provide more details.")
                         yield send_activity("alert_creation", "Additional information needed for alert")
-
-                        # Overwrite assistant content with follow-up question
-                        assistant_message.content = follow_up
-                        db.commit()
+                        final_content = follow_up
 
                 except Exception as e:
                     logger.error(f"Error creating alert: {str(e)}")
                     yield send_activity("error", f"Failed to create alert: {str(e)}")
+                    
+                    if not final_content:
+                        final_content = f"I was unable to create the alert: {str(e)}. Please try again with more details."
+
+            # ── Step 5: Save messages ─────────────────────────────────────────
+            user_message_obj = Message(
+                session_id=session_id,
+                role=MessageRole.USER.value,
+                content=chat_request.message,
+                message_metadata={"context_mode": chat_request.context_mode.value}
+            )
+            db.add(user_message_obj)
+
+            assistant_message = Message(
+                session_id=session_id,
+                role=MessageRole.ASSISTANT.value,
+                content=final_content or "I'm ready to help. What would you like to know?",
+                tokens_used=tokens_used,
+                message_metadata=usage_metadata
+            )
+            db.add(assistant_message)
+            db.commit()
+            db.refresh(assistant_message)
 
             # ── Step 6: Send final SSE response ───────────────────────────────
             final_response = {

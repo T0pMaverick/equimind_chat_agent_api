@@ -78,7 +78,7 @@ class AlertService:
                     headers=self._get_headers()
                 )
                 response.raise_for_status()
-                
+                print("Response :::::::::::::: \n", response.json())
                 result = response.json()
                 logger.info(f"Alert created successfully: ID {result.get('id')}")
                 return result
