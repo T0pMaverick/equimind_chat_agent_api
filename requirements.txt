@@ -43,3 +43,7 @@ python-dateutil
 
 # Monitoring (optional but recommended for production)
 prometheus-fastapi-instrumentator
+
+langchain 
+langchain-community 
+langchain-openai 
