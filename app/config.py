@@ -10,6 +10,14 @@ import os
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
     
+    # PostgreSQL Databases for Text-to-SQL
+    db_1_url: str = ""
+    db_2_url: str = ""
+    db_3_url: str = ""
+    db_1_name: str = "Database 1"
+    db_2_name: str = "Database 2"
+    db_3_name: str = "Database 3"
+        
     # Application
     app_name: str = Field(default="Stock Analysis RAG Agent", env="APP_NAME")
     app_version: str = Field(default="1.0.0", env="APP_VERSION")

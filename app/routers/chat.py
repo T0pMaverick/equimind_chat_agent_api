@@ -24,7 +24,7 @@ from app.schemas import (
     AlertCondition
 )
 from app.models import ChatSession, Message
-from app.services.vector_store import vector_store
+from app.services.sql_agent_service import sql_agent_service
 from app.services.llm_service import llm_service
 from app.services.alert_service import alert_service
 
@@ -342,9 +342,9 @@ async def chat_stream(
         try:
             # Step 1: Processing
             yield send_activity("search", "Processing your query")
-            await asyncio.sleep(0.1)  # Small delay for UI
+            await asyncio.sleep(0.1)
             
-            # Get or create session
+            # ── Session handling ──────────────────────────────────────────────
             session_id = chat_request.session_id
             if session_id:
                 session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
@@ -360,30 +360,8 @@ async def chat_stream(
                 db.commit()
                 db.refresh(session)
                 session_id = session.id
-            
-            # Step 2: Search knowledge base
-            context = None
-            if chat_request.context_mode in [ContextMode.WEB_AND_INTERNAL, ContextMode.INTERNAL_ONLY]:
-                yield send_activity("search", f"Searching internal knowledge base for: '{chat_request.message[:50]}...'")
-                await asyncio.sleep(0.1)
-                
-                search_results = vector_store.search(
-                    query=chat_request.message,
-                    top_k=5
-                )
-                
-                if search_results:
-                    yield send_activity("search", f"Found {len(search_results)} relevant documents in knowledge base")
-                    context = "\n\n".join([
-                        f"**Document {i+1}** (Relevance: {r['score']:.2f}):\n{r['content']}"
-                        for i, r in enumerate(search_results)
-                    ])
-                else:
-                    yield send_activity("search", "No relevant documents found in knowledge base")
-                
-                await asyncio.sleep(0.1)
-            
-            # Step 3: Get chat history
+
+            # ── Get chat history ──────────────────────────────────────────────
             history_messages = db.query(Message).filter(
                 Message.session_id == session_id
             ).order_by(Message.timestamp.asc()).all()
@@ -392,92 +370,147 @@ async def chat_stream(
                 {"role": msg.role, "content": msg.content}
                 for msg in history_messages[-10:]
             ]
-            
-            # Step 4: Analysis activities
-            if chat_request.reasoning_mode == ReasoningMode.DEEP:
-                yield send_activity("analysis", "Analyzing financial metrics and market data")
+
+            # ── Step 2: Query SQL databases ───────────────────────────────────
+            final_content = None
+
+            if chat_request.context_mode in [ContextMode.WEB_AND_INTERNAL, ContextMode.INTERNAL_ONLY]:
+                yield send_activity("search", "Connecting to financial databases")
                 await asyncio.sleep(0.1)
-                yield send_activity("analysis", "Building investment thesis and risk assessment")
+
+                yield send_activity("search", f"Generating SQL query for: '{chat_request.message[:60]}...'")
                 await asyncio.sleep(0.1)
-                yield send_activity("analysis", "Evaluating catalysts and timeline projections")
+
+                try:
+                    sql_result = await sql_agent_service.query(
+                        user_message=chat_request.message,
+                        chat_history=chat_history
+                    )
+
+                    databases_used = sql_result.get("databases_used", [])
+                    if databases_used:
+                        yield send_activity("search", f"Queried: {', '.join(databases_used)}")
+                    else:
+                        yield send_activity("search", "Database query completed")
+
+                    await asyncio.sleep(0.1)
+
+                    # SQL agent already produced the final answer
+                    final_content = sql_result.get("content", "")
+
+                    if final_content:
+                        yield send_activity("analysis", "Query returned results — formatting response")
+                    else:
+                        yield send_activity("analysis", "No results found — generating fallback response")
+
+                    await asyncio.sleep(0.1)
+
+                except Exception as e:
+                    logger.error(f"SQL agent error: {str(e)}")
+                    yield send_activity("error", f"Database query failed: {str(e)}")
+                    final_content = None  # Fall through to LLM fallback below
+
+            # ── Step 3: LLM fallback (if SQL agent returned nothing or mode is web-only) ──
+            if not final_content:
+                if chat_request.reasoning_mode == ReasoningMode.DEEP:
+                    yield send_activity("analysis", "Analyzing financial metrics and market data")
+                    await asyncio.sleep(0.1)
+                    yield send_activity("analysis", "Building investment thesis and risk assessment")
+                    await asyncio.sleep(0.1)
+                    yield send_activity("analysis", "Evaluating catalysts and timeline projections")
+                    await asyncio.sleep(0.1)
+                    yield send_activity("analysis", "Performing valuation analysis and sensitivity testing")
+                    await asyncio.sleep(0.1)
+                    yield send_activity("generation", "Generating comprehensive investment report")
+                else:
+                    yield send_activity("analysis", "Preparing detailed analysis")
+                    await asyncio.sleep(0.1)
+                    yield send_activity("generation", "Generating response based on analysis")
+
                 await asyncio.sleep(0.1)
-                yield send_activity("analysis", "Performing valuation analysis and sensitivity testing")
-                await asyncio.sleep(0.1)
-                yield send_activity("generation", "Generating comprehensive investment report")
+
+                llm_response = await llm_service.generate_response(
+                    user_message=chat_request.message,
+                    context=None,
+                    chat_history=chat_history,
+                    reasoning_mode=chat_request.reasoning_mode
+                )
+                final_content = llm_response["content"]
+                tokens_used = llm_response["usage"]["total_tokens"]
+                usage_metadata = llm_response["usage"]
             else:
-                yield send_activity("analysis", "Preparing detailed analysis")
-                await asyncio.sleep(0.1)
-                yield send_activity("generation", "Generating response based on analysis")
-            
+                # SQL agent handled it — apply symbol conversion
+                from app.utils.symbol_converter import symbol_converter
+                final_content = symbol_converter.convert_symbols_in_text(final_content)
+                tokens_used = 0
+                usage_metadata = {"source": "sql_agent"}
+
+            yield send_activity("generation", "Finalizing response")
             await asyncio.sleep(0.1)
-            
-            # Step 5: Generate LLM response
-            llm_response = await llm_service.generate_response(
-                user_message=chat_request.message,
-                context=context,
-                chat_history=chat_history,
-                reasoning_mode=chat_request.reasoning_mode
-            )
-            
-            # Step 6: Save messages
-            user_message = Message(
+
+            # ── Step 4: Save messages ─────────────────────────────────────────
+            user_message_obj = Message(
                 session_id=session_id,
                 role=MessageRole.USER.value,
                 content=chat_request.message,
                 message_metadata={"context_mode": chat_request.context_mode.value}
             )
-            db.add(user_message)
-            
+            db.add(user_message_obj)
+
             assistant_message = Message(
                 session_id=session_id,
                 role=MessageRole.ASSISTANT.value,
-                content=llm_response['content'],
-                tokens_used=llm_response['usage']['total_tokens'],
-                message_metadata=llm_response['usage']
+                content=final_content,
+                tokens_used=tokens_used,
+                message_metadata=usage_metadata
             )
             db.add(assistant_message)
             db.commit()
             db.refresh(assistant_message)
-            
-            # Step 7: Handle alert if requested
+
+            # ── Step 5: Handle alert creation ─────────────────────────────────
             alert_created = None
             if chat_request.create_alert:
                 try:
                     yield send_activity("alert_creation", "Fetching available alert metrics")
                     await asyncio.sleep(0.1)
-                    
-                    # Fetch predefined metrics
+
                     predefined_metrics = await alert_service.get_predefined_metrics()
-                    
+
                     yield send_activity("alert_creation", "Analyzing alert requirements")
                     await asyncio.sleep(0.1)
-                    
-                    # Extract alert info conversationally
+
                     alert_extraction = await llm_service.extract_alert_info_conversational(
                         user_message=chat_request.message,
                         chat_history=chat_history,
                         predefined_metrics=predefined_metrics
                     )
-                    
+
                     if alert_extraction.get("ready"):
                         yield send_activity("alert_creation", "Creating alert")
                         await asyncio.sleep(0.1)
-                        
+
                         alert_data = AlertCreate(**alert_extraction["alert"])
                         alert_response = await alert_service.create_alert(alert_data)
                         alert_created = alert_response
-                        
-                        yield send_activity("alert_creation", f"Alert created successfully (ID: {alert_response.get('id', 'N/A')})")
+
+                        yield send_activity(
+                            "alert_creation",
+                            f"Alert created successfully (ID: {alert_response.get('id', 'N/A')})"
+                        )
                     else:
-                        # Need more info
+                        follow_up = alert_extraction.get("question", "Please provide more details.")
                         yield send_activity("alert_creation", "Additional information needed for alert")
-                
+
+                        # Overwrite assistant content with follow-up question
+                        assistant_message.content = follow_up
+                        db.commit()
+
                 except Exception as e:
                     logger.error(f"Error creating alert: {str(e)}")
                     yield send_activity("error", f"Failed to create alert: {str(e)}")
-                    
-            
-            # Step 8: Send final response
+
+            # ── Step 6: Send final SSE response ───────────────────────────────
             final_response = {
                 "type": "response",
                 "data": {
@@ -492,10 +525,10 @@ async def chat_stream(
                 }
             }
             yield f"data: {json.dumps(final_response)}\n\n"
-            
+
             # End of stream
             yield "data: {\"type\": \"done\"}\n\n"
-        
+
         except Exception as e:
             logger.error(f"Error in streaming chat: {str(e)}")
             error_msg = {
@@ -503,13 +536,23 @@ async def chat_stream(
                 "message": str(e)
             }
             yield f"data: {json.dumps(error_msg)}\n\n"
-    
+
     return StreamingResponse(
         generate_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # Disable buffering in nginx
+            "X-Accel-Buffering": "no"
         }
     )
+    
+@router.get("/databases/status")
+async def get_database_status():
+    """Check status of all connected databases"""
+    info = sql_agent_service.get_database_info()
+    return {
+        "databases": info,
+        "total": len(info),
+        "connected": sum(1 for db in info if db["status"] == "connected")
+    }

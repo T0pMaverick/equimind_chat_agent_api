@@ -81,29 +81,28 @@ async def root():
         "health": "/health"
     }
 
-# Startup event
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
-    logger.info(f"Environment: {settings.environment}")
     
-    # Create database tables (if they don't exist)
+    # Initialize database tables
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables initialized")
     except Exception as e:
         logger.error(f"Database initialization error: {str(e)}")
     
-    # Initialize vector store
+    # Initialize SQL Agent
     try:
-        from app.services.vector_store import vector_store
-        info = vector_store.get_collection_info()
-        logger.info(f"Vector store initialized: {info}")
+        from app.services.sql_agent_service import sql_agent_service
+        db_info = sql_agent_service.get_database_info()
+        for db in db_info:
+            logger.info(f"DB: {db['name']} | Status: {db['status']} | Tables: {db['table_count']}")
     except Exception as e:
-        logger.error(f"Vector store initialization error: {str(e)}")
+        logger.error(f"SQL Agent initialization error: {str(e)}")
     
-    logger.info(f"Application started successfully on {settings.host}:{settings.port}")
+    logger.info("Application started successfully!")
 
 # Shutdown event
 @app.on_event("shutdown")
