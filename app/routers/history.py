@@ -22,7 +22,7 @@ from app.models import ChatSession, Message
 from app.middleware.rate_limiter import limiter
 from loguru import logger
 
-from app.services.vector_store import vector_store
+
 from app.services.llm_service import llm_service
 
 
