@@ -39,11 +39,7 @@ class Settings(BaseSettings):
     chroma_persist_directory: str = Field(default="./chroma_db", env="CHROMA_PERSIST_DIRECTORY")
     chroma_collection_name: str = Field(default="stock_knowledge_base", env="CHROMA_COLLECTION_NAME")
     
-    # Embeddings
-    embedding_model_name: str = Field(
-        default="sentence-transformers/all-mpnet-base-v2",
-        env="EMBEDDING_MODEL_NAME"
-    )
+
     
     # Rate Limiting
     rate_limit_per_minute: int = Field(default=20, env="RATE_LIMIT_PER_MINUTE")

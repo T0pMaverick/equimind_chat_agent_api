@@ -11,9 +11,7 @@ alembic
 # Vector Database
 chromadb
 
-# Embeddings & ML
-sentence-transformers
-torch
+
 # OpenAI
 openai
 
