@@ -37,32 +37,112 @@ class SQLAgentService:
 
         logger.info(f"SQL Agent Service initialized with {len(self.databases)} databases")
 
+    def _get_table_descriptions(self) -> Dict[str, str]:
+        """
+        Provide natural language descriptions for each table
+        This helps the agent choose the right table
+        """
+        return {
+            # ── Database 1: Company Metrices ──
+            "companies_financial_data": """
+                PRIMARY TABLE for company financial metrics and ratios.
+                Contains quarterly financial data including:
+                - Revenue, profit, EPS (earnings per share)
+                - Trailing EPS, Net Asset Value
+                - ROE (return on equity), ROA (return on assets)
+                - DIVIDEND YIELD (current dividend yield percentage) ← USE THIS FOR DIVIDEND YIELD QUERIES
+                - Total assets, total equity
+                - Company sector, reporting_period
+                
+                CRITICAL: reporting_period format is 'YYYY_MonthName' (e.g., '2025_September', '2024_December')
+                NOT 'YYYY-MM' format!
+                
+                Available periods: 2025_September, 2024_September, 2024_December, etc.
+                
+                Example queries:
+                - September 2025 data: WHERE reporting_period = '2025_September'
+                - December 2024 data: WHERE reporting_period = '2024_December'
+                - All 2025 data: WHERE reporting_period LIKE '2025_%'
+                
+                Columns include:
+                - company_code (NOT company_name) - use this for company identifier
+                - dividend_yield, earnings_per_share, trailing_eps
+                - return_on_equity, return_on_assets
+                - sector, total_assets_bn, total_equity_bn
+                
+                Use this table for:
+                - Financial ratios (EPS, ROE, ROA, dividend yield)
+                - Company fundamentals
+                - Quarterly performance metrics
+                - "Top companies by [any financial metric]"
+            """,
+            
+            "historical_stock_data": """
+                Historical price and volume data (OHLCV).
+                Contains: open, high, low, close prices, volume
+                Use for: price history, trading volumes, price trends
+            """,
+            
+            "sector_summary": """
+                Aggregated sector-level statistics.
+                Use for: sector comparisons, industry analysis
+            """,
+            
+            # ── Database 2: Company Financials ──
+            "financial_metrics": """
+                Additional financial analysis metrics.
+                Use for: detailed financial calculations, custom metrics
+            """,
+            
+            "dividend_history": """
+                Historical dividend PAYMENT records (past dividends paid).
+                Contains: dividend payment dates, amounts, types (cash/scrip)
+                
+                DO NOT USE for current dividend yield queries.
+                Only use for: dividend payment history, past dividend dates
+            """,
+            
+            # ── Database 3: Trading Data ──
+            "trades": """
+                Individual trade transactions.
+                Use for: trade-level analysis, execution prices
+            """,
+            
+            "orderbook_snapshots": """
+                Order book state at different times.
+                Use for: market depth, bid/ask analysis
+            """,
+        }
+    
     def _load_databases(self):
-        """Load all configured PostgreSQL databases"""
+        """Load all configured PostgreSQL databases with custom table info"""
         db_configs = [
             (settings.db_1_url, settings.db_1_name),
             (settings.db_2_url, settings.db_2_name),
             (settings.db_3_url, settings.db_3_name),
         ]
+        
+        table_descriptions = self._get_table_descriptions()
 
         for db_url, db_name in db_configs:
             if db_url:
                 try:
                     db = SQLDatabase.from_uri(
                         db_url,
-                        sample_rows_in_table_info=0,  # ✅ Disable sample rows - prevents SSL timeout
+                        sample_rows_in_table_info=0,
                         engine_args={
-                            "pool_pre_ping": True,        # ✅ Test connection before use
-                            "pool_recycle": 300,           # ✅ Recycle connections every 5 mins
-                            "pool_timeout": 30,            # ✅ Wait max 30s for connection
+                            "pool_pre_ping": True,
+                            "pool_recycle": 300,
+                            "pool_timeout": 30,
                             "connect_args": {
-                                "connect_timeout": 10,     # ✅ Connection timeout
-                                "keepalives": 1,           # ✅ Enable TCP keepalives
-                                "keepalives_idle": 30,     # ✅ Start keepalive after 30s idle
-                                "keepalives_interval": 10, # ✅ Send keepalive every 10s
-                                "keepalives_count": 5      # ✅ Retry 5 times before dropping
+                                "connect_timeout": 10,
+                                "keepalives": 1,
+                                "keepalives_idle": 30,
+                                "keepalives_interval": 10,
+                                "keepalives_count": 5
                             }
-                        }
+                        },
+                        custom_table_info=table_descriptions
                     )
                     self.databases[db_name] = db
                     logger.info(
@@ -97,30 +177,65 @@ class SQLAgentService:
             db_info += f"Tables: {', '.join(tables)}\n"
 
         return f"""You are an expert SQL analyst for the Colombo Stock Exchange (CSE) financial data system.
-You have access to {len(self.databases)} PostgreSQL databases:
 
-{db_info}
+    {db_info}
 
-**Your Responsibilities:**
-1. Understand the user's question in natural language
-2. Identify which database(s) contain the relevant data
-3. Generate accurate PostgreSQL SQL queries
-4. Execute the queries and return clear, formatted results
-5. If data spans multiple databases, query each one and combine the results
+    **CRITICAL DATE FORMAT RULES:**
 
-**Rules:**
-- Always use SELECT queries only (never INSERT, UPDATE, DELETE, DROP)
-- Limit results to 50 rows unless user asks for more
-- Format numbers with proper units (millions, billions)
-- If a query fails, try an alternative approach
-- Always explain what data you found
-- For stock symbols, try both short (SAMP) and full format (SAMP.N0000)
+    The `reporting_period` column uses format: 'YYYY_MonthName'
+    Examples: '2025_September', '2024_December', '2025_March'
 
-**Response Format:**
-- Answer the question directly
-- Show the key data points
-- Add brief interpretation where helpful
-"""
+    When user asks for:
+    - "September 2025" → WHERE reporting_period = '2025_September'
+    - "Q3 2025" → WHERE reporting_period IN ('2025_July', '2025_August', '2025_September')
+    - "2025 data" → WHERE reporting_period LIKE '2025_%'
+
+    **CRITICAL COLUMN NAMES:**
+    - Use `company_code` (NOT company_name) for company identifier
+    - Column names: dividend_yield, earnings_per_share, trailing_eps, return_on_equity, etc.
+
+    **TABLE SELECTION RULES:**
+
+    1. For DIVIDEND YIELD queries:
+    → Use `companies_financial_data.dividend_yield`
+
+    2. For FINANCIAL RATIOS:
+    → Use `companies_financial_data` table
+
+    3. For PRICE DATA:
+    → Use `historical_stock_data` table
+
+    **Rules:**
+    - SELECT only (never INSERT, UPDATE, DELETE)
+    - Limit to 50 rows unless specified
+    - If query fails, try alternative column names
+    - Always check reporting_period format: 'YYYY_MonthName'
+    """
+    def _get_query_examples(self) -> str:
+        """Provide example queries to guide the agent"""
+        return """
+    **Example Query Patterns:**
+
+    Q: "Top 10 companies by dividend yield in September 2025"
+    A: SELECT company_code, dividend_yield 
+    FROM companies_financial_data 
+    WHERE reporting_period LIKE '2025-09%' 
+    ORDER BY dividend_yield DESC 
+    LIMIT 10;
+
+    Q: "What is the EPS of SAMP in Q3 2025?"
+    A: SELECT company_code, earnings_per_share, trailing_eps 
+    FROM companies_financial_data 
+    WHERE company_code = 'SAMP' 
+    AND reporting_period LIKE '2025-09%';
+
+    Q: "Companies with ROE above 15%"
+    A: SELECT company_code, return_on_equity, sector 
+    FROM companies_financial_data 
+    WHERE return_on_equity > 15 
+    ORDER BY return_on_equity DESC;
+    """
+
 
     def _create_multi_db_agent(self):
         """Create a single agent with tools from all databases"""
