@@ -103,15 +103,135 @@ class SQLAgentService:
             """,
             
             # ── Database 3: Trading Data ──
-            "trades": """
-                Individual trade transactions.
-                Use for: trade-level analysis, execution prices
-            """,
+             "stock_analysis_all_results": """
+            ⭐ PRIMARY TABLE FOR TECHNICAL INDICATORS AND STOCK ANALYSIS ⭐
             
-            "orderbook_snapshots": """
-                Order book state at different times.
-                Use for: market depth, bid/ask analysis
-            """,
+            Contains comprehensive technical analysis data for all stocks:
+            
+            TECHNICAL INDICATORS:
+            - RSI (Relative Strength Index) ← USE THIS FOR RSI QUERIES
+            - rsi_divergence (Bearish/Bullish divergence detection)
+            - relative_strength (market relative strength)
+            - EMA values (ema_20, ema_50, ema_100, ema_200)
+            - volume_analysis (momentum indicators)
+            
+            PRICE DATA:
+            - closing_price, prev_close, change_pct
+            - turnover, volume, vol_avg_5d, vol_avg_20d
+            
+            CRITICAL COLUMN NAMES:
+            - symbol (stock ticker e.g., 'HNB.N0000', 'COMB.N0000')
+            - rsi (RSI value as decimal, e.g., 46.09)
+            - date (latest analysis date)
+            
+            Use this table for:
+            - RSI queries ("What is the RSI of HNB?")
+            - Technical indicator queries (EMA, volume analysis)
+            - Price change analysis
+            - Volume momentum analysis
+            
+            Example queries:
+            - RSI: SELECT symbol, rsi, closing_price FROM stock_analysis_all_results WHERE symbol = 'HNB.N0000'
+            - Top RSI: SELECT symbol, rsi, closing_price ORDER BY rsi DESC LIMIT 10
+        """,
+        
+        "dividend_history": """
+            ⭐ HISTORICAL DIVIDEND PAYMENT RECORDS ⭐
+            
+            Contains past dividend announcements and ex-dividend dates:
+            
+            COLUMNS:
+            - company_code (symbol format: 'XXXX.N0000')
+            - announcement_date (when dividend was announced)
+            - rate_of_dividend (dividend amount/rate)
+            - xd_date (ex-dividend date - when stock trades without dividend)
+            
+            Use this table for:
+            - Dividend payment history ("When did HNB pay dividends?")
+            - Dividend announcement dates
+            - Historical dividend rates
+            - Ex-dividend date queries
+            - Dividend frequency analysis
+            
+            IMPORTANT: This is for HISTORICAL dividend payments, NOT current yield
+            For current dividend yield → use companies_financial_data table
+            
+            Example queries:
+            - Recent dividends: SELECT * FROM dividend_history WHERE company_code = 'HNB.N0000' ORDER BY xd_date DESC LIMIT 5
+            - Dividend history for 2024: SELECT * FROM dividend_history WHERE company_code = 'ALLI.N0000' AND xd_date >= '2024-01-01'
+            - Total dividends paid: SELECT company_code, SUM(rate_of_dividend) as total_dividends FROM dividend_history GROUP BY company_code
+        """,
+        
+        "pattern_analysis": """
+            ⭐ CHART PATTERN ANALYSIS AND TRADING SIGNALS ⭐
+            
+            Contains AI-generated technical pattern analysis with trading recommendations:
+            
+            KEY COLUMNS:
+            - symbol (stock ticker: 'XXXX.N0000')
+            - analysis_date (date of analysis)
+            - overall_sentiment (Bullish/Bearish/Neutral)
+            - recommended_action (specific trading recommendation text)
+            - current_price (price at analysis time)
+            - entry_price (suggested entry point)
+            - stop_loss (suggested stop loss level)
+            - target_price (profit target)
+            - raw_payload (JSON with detailed pattern analysis)
+            
+            The raw_payload JSON contains:
+            - chart_patterns (e.g., "Rounded Bottom", "Diamond", "Head and Shoulders")
+            - candlestick_patterns (e.g., "Bullish Harami", "Doji", "Engulfing")
+            - signal_confidence (reliability score 0-100)
+            - pattern rationale (why pattern was detected)
+            - detection_reliability (0.0-1.0)
+            
+            Use this table for:
+            - Chart pattern queries ("What patterns does HNB show?")
+            - Trading signal requests ("Should I buy COMB?")
+            - Sentiment analysis ("Is ALLI bullish or bearish?")
+            - Entry/exit price recommendations
+            - Pattern-based trading strategies
+            - Find stocks with specific patterns
+            
+            Example queries:
+            - Latest analysis: SELECT symbol, overall_sentiment, recommended_action, entry_price, target_price 
+                               FROM pattern_analysis WHERE symbol = 'HNB.N0000' ORDER BY analysis_date DESC LIMIT 1
+            - Bullish stocks: SELECT symbol, recommended_action, current_price, target_price 
+                             FROM pattern_analysis WHERE overall_sentiment = 'Bullish' ORDER BY analysis_date DESC LIMIT 10
+            - Pattern details: SELECT symbol, raw_payload FROM pattern_analysis WHERE symbol = 'COMB.N0000' ORDER BY analysis_date DESC LIMIT 1
+            - Best opportunities: SELECT symbol, overall_sentiment, (target_price - current_price) as potential_gain 
+                                 FROM pattern_analysis WHERE overall_sentiment = 'Bullish' ORDER BY potential_gain DESC LIMIT 10
+        """,
+        
+        "trades": """
+            Individual trade transactions.
+            Contains: trade_id, symbol, price, volume, timestamp, buyer, seller
+            Use for: trade-level analysis, execution prices, order flow analysis
+        """,
+        
+        "orderbook_snapshots": """
+            Order book state at different times.
+            Contains: symbol, timestamp, bid_levels, ask_levels, spreads
+            Use for: market depth, bid/ask analysis, liquidity analysis
+        """,
+        
+        "crossings": """
+            Block trades and crossing transactions.
+            Contains: symbol, price, volume, crossing_date, participants
+            Use for: large institutional trades, off-market deals, block trade analysis
+        """,
+        
+        "day_agg": """
+            Daily aggregated trading statistics.
+            Contains: symbol, date, total_volume, total_value, trades_count, vwap
+            Use for: daily summaries, volume aggregates, daily statistics
+        """,
+        
+        "orderbook_levels": """
+            Detailed order book levels.
+            Contains: symbol, timestamp, level, bid_price, bid_volume, ask_price, ask_volume
+            Use for: market microstructure analysis, depth analysis
+        """
         }
     
     def _load_databases(self):
@@ -181,35 +301,76 @@ class SQLAgentService:
     {db_info}
 
     **CRITICAL DATE FORMAT RULES:**
-
     The `reporting_period` column uses format: 'YYYY_MonthName'
     Examples: '2025_September', '2024_December', '2025_March'
 
-    When user asks for:
-    - "September 2025" → WHERE reporting_period = '2025_September'
-    - "Q3 2025" → WHERE reporting_period IN ('2025_July', '2025_August', '2025_September')
-    - "2025 data" → WHERE reporting_period LIKE '2025_%'
-
-    **CRITICAL COLUMN NAMES:**
-    - Use `company_code` (NOT company_name) for company identifier
-    - Column names: dividend_yield, earnings_per_share, trailing_eps, return_on_equity, etc.
+    **CRITICAL SYMBOL FORMAT:**
+    - Stock symbols in Trading Data DB use format: 'XXXX.N0000' (e.g., 'HNB.N0000', 'COMB.N0000')
+    - If user says "HNB", search for 'HNB.N0000' in Trading Data tables
+    - If user says "COMB", search for 'COMB.N0000' in Trading Data tables
+    - Always add '.N0000' suffix when querying Trading Data tables
+    - In Company Metrices DB, symbols may be without suffix (just 'HNB', 'COMB')
 
     **TABLE SELECTION RULES:**
 
-    1. For DIVIDEND YIELD queries:
-    → Use `companies_financial_data.dividend_yield`
+    1. **RSI queries** (Relative Strength Index):
+    → stock_analysis_all_results.rsi
 
-    2. For FINANCIAL RATIOS:
-    → Use `companies_financial_data` table
+    2. **Technical indicators** (EMA, volume, divergence):
+    → stock_analysis_all_results (rsi, ema_20, ema_50, ema_100, ema_200, volume_analysis)
 
-    3. For PRICE DATA:
-    → Use `historical_stock_data` table
+    3. **Chart patterns and trading signals**:
+    → pattern_analysis (overall_sentiment, recommended_action, entry_price, stop_loss, target_price)
+
+    4. **Dividend payment history**:
+    → dividend_history (rate_of_dividend, xd_date, announcement_date)
+
+    5. **Current dividend yield**:
+    → companies_financial_data.dividend_yield
+
+    6. **Financial ratios** (EPS, ROE, ROA):
+    → companies_financial_data
+
+    7. **Price history**:
+    → historical_stock_data OR stock_analysis_all_results.closing_price
+
+    8. **Trading sentiment/recommendations**:
+    → pattern_analysis (overall_sentiment, recommended_action)
+
+    **COMMON QUERY PATTERNS:**
+
+    "What is the RSI of HNB?"
+    → SELECT symbol, rsi, date FROM stock_analysis_all_results WHERE symbol = 'HNB.N0000'
+
+    "Show me bullish stocks"
+    → SELECT symbol, overall_sentiment, recommended_action, current_price, target_price 
+    FROM pattern_analysis WHERE overall_sentiment = 'Bullish' ORDER BY analysis_date DESC LIMIT 10
+
+    "When did ALLI pay dividends?"
+    → SELECT company_code, rate_of_dividend, xd_date FROM dividend_history 
+    WHERE company_code = 'ALLI.N0000' ORDER BY xd_date DESC
+
+    "What patterns does COMB show?"
+    → SELECT symbol, overall_sentiment, recommended_action 
+    FROM pattern_analysis WHERE symbol = 'COMB.N0000' ORDER BY analysis_date DESC LIMIT 1
+
+    "Should I buy HNB?"
+    → SELECT symbol, overall_sentiment, recommended_action, entry_price, stop_loss, target_price 
+    FROM pattern_analysis WHERE symbol = 'HNB.N0000' ORDER BY analysis_date DESC LIMIT 1
+
+    "Current dividend yield of JKH?"
+    → SELECT company_code, dividend_yield FROM companies_financial_data 
+    WHERE company_code = 'JKH' AND reporting_period = '2025_September'
+
+    "Top 10 by RSI"
+    → SELECT symbol, rsi, closing_price FROM stock_analysis_all_results ORDER BY rsi DESC LIMIT 10
 
     **Rules:**
-    - SELECT only (never INSERT, UPDATE, DELETE)
+    - SELECT only (never INSERT, UPDATE, DELETE, DROP)
     - Limit to 50 rows unless specified
-    - If query fails, try alternative column names
-    - Always check reporting_period format: 'YYYY_MonthName'
+    - Handle both symbol formats
+    - Use ORDER BY date/analysis_date DESC LIMIT 1 for "latest" or "current"
+    - If query fails, try alternative formats
     """
     def _get_query_examples(self) -> str:
         """Provide example queries to guide the agent"""
