@@ -132,17 +132,76 @@ async def chat_stream(
                 for msg in history_messages[-10:]
             ]
 
-            # ── Step 2: Query SQL databases (skip if creating alert) ──────────
+            # ── Auto-detect alert request ─────────────────────────────────────
+            alert_keywords = [
+    # Core alert terms
+    "alert", "notify", "notification", "remind", "reminder", "warn", "warning",
+    
+    # Direct commands
+    "alert me", "notify me", "remind me", "tell me", "inform me", 
+    "let me know", "update me", "warn me", "ping me", "message me",
+    
+    # When/if triggers
+    "tell me when", "let me know when", "inform me when", "notify me when",
+    "alert me when", "update me when", "ping me when",
+    "tell me if", "let me know if", "inform me if", "notify me if",
+    "alert me if", "warn me if",
+    
+    # Monitoring
+    "watch", "monitor", "track", "follow", "keep an eye", "look out",
+    "watch for", "monitor for", "keep watching", "keep monitoring",
+    
+    # Conditional triggers
+    "when it reaches", "when it hits", "when it crosses", "when it goes above",
+    "when it goes below", "when it exceeds", "when it drops", "when it falls",
+    "if it reaches", "if it hits", "if it crosses", "if it goes above",
+    "if it goes below", "if it exceeds", "if it drops",
+    
+    # Setup phrases
+    "set up alert", "set alert", "setup alert", "create alert", "make alert",
+    "add alert", "configure alert", "set notification", "create notification",
+    "set trigger", "create trigger",
+    
+    # Keep informed
+    "keep me posted", "keep me updated", "keep me informed",
+    "keep posted", "keep updated", "stay updated",
+    
+    # Threshold indicators
+    "above", "below", "exceeds", "falls below", "drops below",
+    "greater than", "less than", "more than", "hits", "reaches",
+    "crosses", "breaks", "passes", "over", "under",
+    
+    # Natural questions
+    "i want to know when", "i need to know when", "i want to know if",
+    "i need to know if", "can you tell me when", "can you notify me",
+    "could you notify", "would you let me know",
+    
+    # Polite requests
+    "please notify", "please alert", "please inform", "please tell me",
+    "please let me know", "please remind", "please update",
+    
+    # Stock specific
+    "price alert", "stock alert", "value alert", "price notification",
+    "threshold alert", "price trigger",
+    
+    # Urgency
+    "as soon as", "the moment", "immediately when", "right when"
+]
+            
+            # Check message for alert keywords (case-insensitive)
+            message_lower = chat_request.message.lower()
+            should_create_alert = any(keyword in message_lower for keyword in alert_keywords)
+            
+
+            # ── Step 2: Query SQL databases (skip if alert-only) ──────────────
             final_content = None
             
             # Check if this is an alert-only request
-            is_alert_request = chat_request.create_alert and any(
-                keyword in chat_request.message.lower() 
-                for keyword in ["alert", "notify", "notification", "tell me when", "let me know when"]
-            )
+            is_alert_request = should_create_alert
             
             if is_alert_request:
-                logger.info("Alert-only request detected - skipping SQL query")
+                print(111111111111111111111111111111)
+                logger.info("Alert request detected - skipping SQL query")
                 yield send_activity("alert_creation", "Processing alert request")
                 await asyncio.sleep(0.1)
                 
@@ -227,9 +286,11 @@ async def chat_stream(
                 yield send_activity("generation", "Finalizing response")
                 await asyncio.sleep(0.1)
 
-            # ── Step 4: Handle alert creation ─────────────────────────────────
+            # ── Step 4: Handle alert creation (AUTO-DETECTED) ────────────────
             alert_created = None
-            if chat_request.create_alert:
+            
+            # ✅ Create alert if detected automatically OR explicitly requested
+            if should_create_alert:
                 try:
                     yield send_activity("alert_creation", "Fetching available alert metrics")
                     await asyncio.sleep(0.1)
@@ -259,17 +320,20 @@ async def chat_stream(
                         )
                         
                         # ✅ Generate success message
-                        alert_dict = alert_data.model_dump()
-                        symbols = ", ".join(alert_dict["symbols"])
-                        condition = alert_dict["conditions"][0]["conditions"][0]  # ✅ Use alert_dict!
-                        metric = condition.get("metric", "value")
-                        operation = condition.get("operation", "")
-                        value = condition.get("values", [0])[0]
-                        
-                        alert_success_message = f"""✅ **Alert Created Successfully!**
+                        try:
+                            alert_dict = alert_data.model_dump()
+                            symbols = ", ".join(alert_dict["symbols"])
+                            condition_group = alert_dict["conditions"][0]
+                            condition = condition_group["conditions"][0]
+                            metric = condition.get("metric", "value")
+                            operation = condition.get("operation", "")
+                            values = condition.get("values", [])
+                            value = values[0] if values else "N/A"
+                            
+                            alert_success_message = f"""✅ **Alert Created Successfully!**
 
 **Alert Details:**
-- **Name:** {alert_data.name}
+- **Name:** {alert_dict.get("name", "Alert")}
 - **Symbols:** {symbols}
 - **Condition:** {metric} {operation} {value}
 - **Status:** Active
@@ -277,8 +341,16 @@ async def chat_stream(
 
 Your alert is now active and you'll be notified when the condition is met."""
 
-                        # Override content with alert success message
-                        final_content = alert_success_message
+                            # Override content with alert success message
+                            final_content = alert_success_message
+                            
+                        except Exception as format_error:
+                            logger.error(f"Error formatting alert message: {format_error}")
+                            final_content = f"""✅ **Alert Created Successfully!**
+
+**Alert ID:** {alert_response.get('id', 'N/A')}
+
+Your alert has been created and is now active."""
                         
                     else:
                         # Need more info - ask follow-up question
