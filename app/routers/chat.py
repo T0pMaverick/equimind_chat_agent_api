@@ -88,6 +88,9 @@ async def chat_stream(
         """Generate SSE stream of activities and response"""
         feed = create_activity_feed()
         
+        user_id = request.headers.get("user_id", "5")  # Default to "5" if not provided
+        logger.info(f"Processing request for user_id: {user_id}")
+        
         def send_activity(activity_type: str, message: str):
             """Helper to send activity as SSE"""
             activity = {
@@ -295,7 +298,7 @@ async def chat_stream(
                     yield send_activity("alert_creation", "Fetching available alert metrics")
                     await asyncio.sleep(0.1)
 
-                    predefined_metrics = await alert_service.get_predefined_metrics()
+                    predefined_metrics = await alert_service.get_predefined_metrics(user_id)
 
                     yield send_activity("alert_creation", "Analyzing alert requirements")
                     await asyncio.sleep(0.1)
@@ -311,7 +314,7 @@ async def chat_stream(
                         await asyncio.sleep(0.1)
 
                         alert_data = AlertCreate(**alert_extraction["alert"])
-                        alert_response = await alert_service.create_alert(alert_data)
+                        alert_response = await alert_service.create_alert(alert_data,user_id)
                         alert_created = alert_response
 
                         yield send_activity(
